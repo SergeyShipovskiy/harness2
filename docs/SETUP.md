@@ -142,8 +142,9 @@ Codex runs with its sandbox disabled. Review the
 
 ## Subscriptions: Codex and Claude Code roles
 
-JobBench can run entirely on a ChatGPT and a Claude subscription, with no API keys
-or Vertex project. Three role lines in `.env` choose the tool and model for each
+JobBench and SWE-bench Verified can run entirely on a ChatGPT and a Claude
+subscription, with no API keys or Vertex project; [SUBSCRIPTIONS.md](../SUBSCRIPTIONS.md)
+is the full setup walkthrough. Three role lines in `.env` choose the tool and model for each
 role, as `<tool>:<model>` with tool `codex`, `claude` or `opencode`:
 
 ```bash
@@ -175,7 +176,7 @@ that serves your model. `harness2-check` verifies every login.
 The Claude Code executor lays the harness out natively: `CLAUDE.md`,
 `.claude/skills/<name>/SKILL.md` (frontmatter `name:` equal to the directory),
 hooks in `.claude/settings.json`, and `sub_agents/<name>/AGENT.md` installed as
-`.claude/agents/<name>.md`. Subscription modes are wired for JobBench only.
+`.claude/agents/<name>.md`. Subscription modes are wired for JobBench and SWE-bench.
 
 ## Network access during setup
 
