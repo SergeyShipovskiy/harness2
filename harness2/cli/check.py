@@ -25,7 +25,7 @@ from harness2.preflight import check
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--bench", choices=("jb", "lab", "wb"), required=True)
+    p.add_argument("--bench", choices=("jb", "lab", "wb", "swe"), required=True)
     p.add_argument("--subset", choices=("office", "web", "code"))
     p.add_argument("--substrate", choices=SUBSTRATES, default=config.DEFAULT_SUBSTRATE)
     args = p.parse_args(argv)

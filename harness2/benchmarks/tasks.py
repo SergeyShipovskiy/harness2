@@ -37,6 +37,13 @@ def discover(bench: str, subset: str | None = None) -> dict[str, str]:
             p.parent.relative_to(root).as_posix(): p.parent.relative_to(root).parts[0]
             for p in sorted(root.glob("*/*/task.json"))
         }
+    elif bench == "swe":
+        root = config.swe_tasks_dir()
+        tasks = {
+            p.parent.name: p.parent.name.rsplit("-", 1)[0]
+            for p in sorted(root.glob("*/task.toml"))
+            if (p.parent / "instruction.md").is_file()
+        }
     elif bench == "wb" and subset in ("office", "web", "code"):
         root = config.wb_repo() / "datasets" / f"wb-bench-{subset}-v1.0" / "tasks"
         tasks = {}

@@ -25,7 +25,7 @@ from harness2 import config, install
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("benchmark", choices=("jb", "lab", "wb"))
+    p.add_argument("benchmark", choices=("jb", "lab", "wb", "swe"))
     p.add_argument(
         "--subset",
         choices=("office", "web", "code"),
@@ -43,11 +43,13 @@ def main(argv=None):
         p.exit(1, f"setup failed: {missing}\n")
     if missing:
         print(f"Note: {missing}")
-    name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[args.benchmark]
+    name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench", "swe": "harbor"}[
+        args.benchmark
+    ]
     try:
         if not dry:
             for binary in ("git", "uv", "npm") + (
-                ("docker", "curl") if args.benchmark == "wb" else ()
+                ("docker", "curl") if args.benchmark in ("wb", "swe") else ()
             ):
                 if not shutil.which(binary):
                     raise RuntimeError(f"Missing {binary}; see README.md")
@@ -64,11 +66,14 @@ def main(argv=None):
                 dry_run=dry,
             )
         install.clone(name, dry_run=dry)
-        install.patch(name, dry_run=dry)
+        if name in install.PATCHES:
+            install.patch(name, dry_run=dry)
         install.overlays(name, dry_run=dry)
         repo = config.DEPENDENCIES / name
         install.run(["uv", "sync", "--locked", "--python", "3.12"], cwd=repo, dry_run=dry)
-        if args.benchmark == "jb":
+        if args.benchmark == "swe":
+            install.swe_tasks(dry_run=dry)
+        elif args.benchmark == "jb":
             install.run(
                 ["uv", "pip", "install", "--python", repo / ".venv/bin/python", "python-docx"],
                 dry_run=dry,

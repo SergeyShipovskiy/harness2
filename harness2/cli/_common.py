@@ -28,7 +28,7 @@ from ..core import library as LIB
 from ..core import schedule as SCHED
 from ..core.spec import BenchmarkAdapter
 
-BENCHES = ("jb", "wb", "lab")
+BENCHES = ("jb", "wb", "lab", "swe")
 WB_SUBSETS = ("office", "web", "code")
 SUBSTRATES = ("oc", "cx", "cc")
 
@@ -51,8 +51,14 @@ def make_adapter(
         raise ValueError(f"unknown bench {bench!r}; expected one of {BENCHES}")
     if substrate not in SUBSTRATES:
         raise ValueError(f"unknown substrate {substrate!r}; expected one of {SUBSTRATES}")
-    if substrate == "cc" and bench != "jb":
-        raise ValueError("the Claude Code executor (cc) is wired for --bench jb only")
+    if substrate == "cc" and bench not in ("jb", "swe"):
+        raise ValueError("the Claude Code executor (cc) is wired for --bench jb and swe only")
+    if bench == "swe":
+        if subset:
+            raise ValueError("--subset applies to --bench wb only")
+        from ..benchmarks.swebench import SweAdapter
+
+        return SweAdapter(substrate=substrate, split_file=split_file)
     if bench == "wb":
         if subset not in WB_SUBSETS:
             raise ValueError(f"--bench wb needs --subset from {WB_SUBSETS}, got {subset!r} ")
@@ -99,7 +105,7 @@ def summary_namespace(adapter: BenchmarkAdapter, k: int, *, seed: int | None, ta
 
 def add_cell_args(p: argparse._ActionsContainer) -> None:
     """The (benchmark, substrate) cell selectors; `p` may be a parser or an argument group."""
-    p.add_argument("--bench", required=True, choices=BENCHES, help="jb | wb | lab")
+    p.add_argument("--bench", required=True, choices=BENCHES, help="jb | wb | lab | swe")
     p.add_argument(
         "--subset", default=None, choices=WB_SUBSETS, help="WB only: office | web | code"
     )

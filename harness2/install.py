@@ -328,6 +328,31 @@ def codex_config_error() -> str | None:
     return None
 
 
+def swe_tasks(*, dry_run=False):
+    """SWE-bench Verified in Harbor's task format: a sparse checkout of one dataset directory."""
+    name = "harbor-datasets"
+    repo = config.DEPENDENCIES / name
+    pin = config.DEPENDENCY_PINS[name]
+    if (repo / ".git").exists():
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        if head == pin and config.swe_tasks_dir().is_dir():
+            return
+        raise RuntimeError(f"{repo} is not the pinned SWE-bench checkout; move it aside first")
+    run(["git", "init", "-q", repo], dry_run=dry_run)
+    run(["git", "-C", repo, "remote", "add", "origin", config.DEPENDENCY_ORIGINS[name]], dry_run=dry_run)
+    run(
+        ["git", "-C", repo, "sparse-checkout", "set", "--no-cone", "/datasets/swebench-verified/"],
+        dry_run=dry_run,
+    )
+    run(
+        ["git", "-C", repo, "fetch", "--depth", "1", "--filter=blob:none", "origin", pin],
+        dry_run=dry_run,
+    )
+    run(["git", "-C", repo, "checkout", "-q", "--detach", "FETCH_HEAD"], dry_run=dry_run)
+
+
 def download_jobbench(*, dry_run=False):
     """Install the JobBench task tree from its public Hugging Face dataset repo.
 

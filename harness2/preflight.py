@@ -58,9 +58,12 @@ def check(adapter, *, judge=False) -> list[str]:
             errors.append(str(exc))
 
     bench = adapter.spec.name.split("-", 1)[0]
-    name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[bench]
+    name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench", "swe": "harbor"}[
+        bench
+    ]
     repo = config.DEPENDENCIES / name
-    for dependency in (name, "opencode") if opencode else (name,):
+    deps = (name, "harbor-datasets") if bench == "swe" else (name,)
+    for dependency in deps + (("opencode",) if opencode else ()):
         target = config.DEPENDENCIES / dependency
         if (target / ".git").exists():
             try:
@@ -71,6 +74,8 @@ def check(adapter, *, judge=False) -> list[str]:
                     errors.append(f"{dependency}: checkout differs from the supported pin")
             except subprocess.CalledProcessError:
                 errors.append(f"{dependency}: cannot read checkout revision")
+        if dependency not in PATCHES:
+            continue
         patch = config.THIRD_PARTY / "patches" / PATCHES[dependency]
         probe(
             f"{dependency} patch",

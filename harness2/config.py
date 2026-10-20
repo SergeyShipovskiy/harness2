@@ -144,12 +144,16 @@ DEPENDENCY_PINS = {
     "workbuddy-bench": "b516950be5b56eb3be406c2f76ee1c5111dcb57f",
     "harvey-labs": "b58a28ae9fde5ee4b810e53b4fd0a1915325a35d",
     "opencode": "23fb5e0516c99ac04a1aa46c193efda2e1b9bb24",
+    "harbor": "b53b8134e1241686dca7759af188f987ecc48e8b",
+    "harbor-datasets": "86723674f04e4209ac479d0fb75d9d9f44b4377e",
 }
 DEPENDENCY_ORIGINS = {
     "job-bench-eval": "https://github.com/Job-Bench/job-bench-eval.git",
     "workbuddy-bench": "https://github.com/Tencent/workbuddy-bench.git",
     "harvey-labs": "https://github.com/harveyai/harvey-labs.git",
     "opencode": "https://github.com/anomalyco/opencode.git",
+    "harbor": "https://github.com/harbor-framework/harbor.git",
+    "harbor-datasets": "https://github.com/laude-institute/harbor-datasets.git",
 }
 
 
@@ -163,6 +167,19 @@ def wb_repo() -> Path:
 
 def lab_repo() -> Path:
     return DEPENDENCIES / "harvey-labs"
+
+
+def swe_tasks_dir() -> Path:
+    return DEPENDENCIES / "harbor-datasets" / "datasets" / "swebench-verified"
+
+
+HARBOR_BIN = DEPENDENCIES / "harbor" / ".venv" / "bin" / "harbor"
+# A long-lived claude.ai token from `claude setup-token`: Claude Code inside the task
+# containers cannot read the host profile's keychain login. Keep it in .env only.
+CLAUDE_OAUTH_TOKEN = env("HARNESS2_CLAUDE_OAUTH_TOKEN", "")
+# The Docker daemon for SWE-bench containers, e.g. a Colima profile of its own
+# (unix:///Users/<you>/.colima/swebench/docker.sock); empty means the default context.
+SWE_DOCKER_HOST = env("HARNESS2_SWE_DOCKER_HOST", "")
 
 
 OPENCODE_DIR = DEPENDENCIES / "opencode"
