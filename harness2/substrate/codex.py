@@ -26,6 +26,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Mapping
@@ -208,6 +209,9 @@ class CodexSubstrate:
         """Check the CLI and Responses endpoint, including container configuration."""
         from urllib.parse import urlparse
 
+        if config.CODEX_CHATGPT:
+            self._preflight_chatgpt(require_bridge=require_bridge)
+            return
         config.require("HARNESS2_CODEX_BASE_URL", needed_by="Codex Responses endpoint")
         config.require("HARNESS2_CODEX_API_KEY", needed_by="Codex endpoint authentication")
         url = urlparse(config.CODEX_BASE_URL)
@@ -226,6 +230,31 @@ class CodexSubstrate:
             (url.hostname, url.port or (443 if url.scheme == "https" else 80)), timeout=5
         ):
             pass
+
+    def _preflight_chatgpt(self, *, require_bridge: bool) -> None:
+        if require_bridge:
+            raise config.ConfigError(
+                "HARNESS2_CODEX_AUTH=chatgpt cannot reach WorkBuddy's containers; "
+                "they need a Responses endpoint"
+            )
+        binary = Path(config.CODEX_DIST) / "codex"
+        if not binary.is_file():
+            raise RuntimeError(
+                "Codex is not installed; run scripts/setup_benchmark.py with --substrate cx"
+            )
+        login = f"CODEX_HOME={config.CODEX_HOME_DIR} {binary} login"
+        try:
+            r = subprocess.run(
+                [str(binary), "login", "status"],
+                env={**os.environ, "CODEX_HOME": str(config.CODEX_HOME_DIR)},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"codex login status failed: {exc}") from exc
+        if r.returncode or "ChatGPT" not in r.stdout + r.stderr:
+            raise config.ConfigError(f"Codex has no ChatGPT login in its CODEX_HOME; run: {login}")
 
 
 _TRUNC_FMT = "…(+{n} chars — render truncation)"

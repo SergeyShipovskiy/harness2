@@ -1,8 +1,139 @@
 diff --git a/eval/judge.py b/eval/judge.py
-index 8412969..1c83bb5 100755
+index 8412969..420d629 100755
 --- a/eval/judge.py
 +++ b/eval/judge.py
-@@ -531,6 +531,15 @@ IMPORTANT:
+@@ -19,6 +19,8 @@ import fcntl
+ import json
+ import os
+ import re
++import shutil
++import subprocess
+ import tempfile
+ import time
+ import traceback
+@@ -424,6 +426,68 @@ def get_openai_client(api_base: str, api_key: str):
+     return OpenAI(base_url=api_base, api_key=api_key)
+ 
+ 
++AGY_API_BASE = "agy"
++# agy caps a turn's input near 142k tokens and drops the rest of the prompt silently.
++AGY_INPUT_TOKEN_CAP = int(os.environ.get("AGY_INPUT_TOKEN_CAP", "140000"))
++
++
++class AgyPromptTooLong(RuntimeError):
++    """The prompt hit agy's input cap; retrying would truncate it the same way."""
++
++
++def agy_complete(system: str, prompt: str, judge_model: str, image_paths: list[Path], timeout_sec: int) -> str:
++    """One headless Antigravity CLI turn in a scratch directory; returns the reply text.
++
++    The prompt goes through stdin because it can exceed what argv carries. Images are
++    copied next to it and the agent opens them with its own file viewer.
++    """
++    with tempfile.TemporaryDirectory(prefix="agy-judge-") as work:
++        text = f"{system}\n\n{prompt}"
++        if image_paths:
++            lines = []
++            for i, path in enumerate(image_paths, start=1):
++                local = f"image{i}{path.suffix.lower()}"
++                shutil.copy(path, Path(work) / local)
++                lines.append(f"- {local} (deliverable file {path.name})")
++            text += (
++                "\n## Attached Images\nThese files are in the current directory. "
++                "Open each one with view_file before judging:\n" + "\n".join(lines) + "\n"
++            )
++        cmd = [
++            os.environ.get("AGY_BIN", "agy"),
++            "--input-format", "stream-json",
++            "--output-format", "stream-json",
++            "--disable-slash-commands",
++            "--print-timeout", f"{timeout_sec}s",
++        ]
++        if judge_model:
++            cmd += ["--model", judge_model]
++        proc = subprocess.run(
++            cmd,
++            input=json.dumps({"event": "user", "message": {"content": text}}) + "\n",
++            cwd=work,
++            capture_output=True,
++            text=True,
++            timeout=timeout_sec + 60,
++        )
++    result = None
++    for line in proc.stdout.splitlines():
++        try:
++            event = json.loads(line)
++        except json.JSONDecodeError:
++            continue
++        if isinstance(event, dict) and event.get("event") == "result":
++            result = event.get("result") or {}
++    if result is None:
++        raise RuntimeError(f"agy exited {proc.returncode} without a result: {proc.stderr[-300:]}")
++    if result.get("status") != "SUCCESS":
++        raise RuntimeError(f"agy status {result.get('status')}: {result.get('error', '')}")
++    used = int((result.get("usage") or {}).get("input_tokens") or 0)
++    if used >= AGY_INPUT_TOKEN_CAP:
++        raise AgyPromptTooLong(f"agy input reached {used} tokens; the prompt was truncated")
++    return result.get("response") or ""
++
++
+ def parse_judge_json(content: str) -> tuple[dict, str]:
+     try:
+         return json.loads(content), "direct_json"
+@@ -454,6 +518,38 @@ def parse_judge_json(content: str) -> tuple[dict, str]:
+     raise ValueError(f"Could not extract JSON from response: {content[:500]}")
+ 
+ 
++def openai_complete(
++    system: str,
++    user_content: str | list[dict],
++    judge_model: str,
++    api_base: str,
++    api_key: str,
++    timeout_sec: int,
++    extra_kwargs: dict,
++) -> str:
++    client = get_openai_client(api_base, api_key)
++    response = client.chat.completions.create(
++        model=judge_model,
++        messages=[
++            {"role": "system", "content": system},
++            {"role": "user", "content": user_content},
++        ],
++        # 64k so extended-thinking effort doesn't consume the whole budget and starve the
++        # verdict output (thinking + verdict share this cap; 32k was too small at effort=high,
++        # which silently zeroed rubrics on hard tasks).
++        max_completion_tokens=int(os.environ.get("JUDGE_MAX_COMPLETION_TOKENS", "65536")),
++        temperature=0.0,
++        timeout=timeout_sec,
++        **extra_kwargs,
++    )
++    message = response.choices[0].message if response.choices else None
++    content = getattr(message, "content", None) if message else None
++    if not content:
++        finish = response.choices[0].finish_reason if response.choices else "unknown"
++        raise ValueError(f"Judge returned empty content (finish_reason={finish})")
++    return content.strip()
++
++
+ def judge_rubric(
+     rubric_index: int,
+     rubric: dict,
+@@ -472,11 +568,13 @@ def judge_rubric(
+     criteria_list_text = "\n".join(f"Criterion {idx}: {criterion}" for idx, criterion in enumerate(criteria))
+ 
+     attached_images: list[tuple[str, str]] = []
++    attached_paths: list[Path] = []
+     if image_paths and rubric_needs_vision(rubric):
+         for p in image_paths:
+             url = image_to_data_url(p)
+             if url is not None:
+                 attached_images.append((p.name, url))
++                attached_paths.append(p)
+     vision_used = bool(attached_images)
+ 
+     prompt = f"""You are an evaluation judge. Your task is to evaluate ALL criteria for a single rubric.
+@@ -531,23 +629,28 @@ IMPORTANT:
      last_error = None
      raw_response = ""
      parse_status = "failed"
@@ -15,29 +146,44 @@ index 8412969..1c83bb5 100755
 +        # via extra_body so it reaches the endpoint regardless of SDK version
 +        extra_kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
 +
++    system_text = "You are an evaluation judge. You must return valid JSON only, with no markdown formatting or extra text."
      for attempt in range(max_retries):
          try:
-             client = get_openai_client(api_base, api_key)
-@@ -543,11 +552,20 @@ IMPORTANT:
-                     },
-                     {"role": "user", "content": user_content},
-                 ],
+-            client = get_openai_client(api_base, api_key)
+-            response = client.chat.completions.create(
+-                model=judge_model,
+-                messages=[
+-                    {
+-                        "role": "system",
+-                        "content": "You are an evaluation judge. You must return valid JSON only, with no markdown formatting or extra text.",
+-                    },
+-                    {"role": "user", "content": user_content},
+-                ],
 -                max_completion_tokens=8192,
-+                # 64k so extended-thinking effort doesn't consume the whole budget and starve the
-+                # verdict output (thinking + verdict share this cap; 32k was too small at effort=high,
-+                # which silently zeroed rubrics on hard tasks).
-+                max_completion_tokens=int(os.environ.get("JUDGE_MAX_COMPLETION_TOKENS", "65536")),
-                 temperature=0.0,
-                 timeout=timeout_sec,
-+                **extra_kwargs,
-             )
+-                temperature=0.0,
+-                timeout=timeout_sec,
+-            )
 -            raw_response = response.choices[0].message.content.strip()
-+            message = response.choices[0].message if response.choices else None
-+            content = getattr(message, "content", None) if message else None
-+            if not content:
-+                finish = response.choices[0].finish_reason if response.choices else "unknown"
-+                raise ValueError(f"Judge returned empty content (finish_reason={finish})")
-+            raw_response = content.strip()
++            if api_base == AGY_API_BASE:
++                raw_response = agy_complete(
++                    system_text, prompt, judge_model, attached_paths, timeout_sec
++                ).strip()
++                if not raw_response:
++                    raise ValueError("Judge returned empty content")
++            else:
++                raw_response = openai_complete(
++                    system_text, user_content, judge_model, api_base, api_key, timeout_sec, extra_kwargs
++                )
              parsed, parse_status = parse_judge_json(raw_response)
  
              model_criteria = parsed.get("criteria_results", [])
+@@ -594,6 +697,9 @@ IMPORTANT:
+                 "attached_images": [name for name, _ in attached_images],
+             }
+             return result, debug
++        except AgyPromptTooLong as exc:
++            last_error = exc
++            break
+         except Exception as exc:
+             last_error = exc
+             if attempt < max_retries - 1:

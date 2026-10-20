@@ -970,7 +970,8 @@ class JobBenchAdapter:
                 f"upstream JobBench judge missing at {judge_py}; run scripts/setup_benchmark.py jb"
             )
         if self.substrate.name == "cx":
-            config.require("HARNESS2_CODEX_API_KEY", needed_by="JB codex cells")
+            if not config.CODEX_CHATGPT:
+                config.require("HARNESS2_CODEX_API_KEY", needed_by="JB codex cells")
             # The rollout reads the endpoint from CODEX_HOME/config.toml, not from the
             # environment the substrate preflight just probed; refuse to report ready
             # for an endpoint the run would never contact.
@@ -1088,6 +1089,7 @@ class JobBenchAdapter:
         try:
             token = (
                 config.JB_JUDGE_API_KEY
+                or ("unused" if config.AGY_JUDGE else "")
                 or subprocess.run(
                     ["gcloud", "auth", "application-default", "print-access-token"],
                     capture_output=True,
@@ -1119,7 +1121,7 @@ class JobBenchAdapter:
             "--api-base",
             api_base,
             "--max-workers",
-            "8",
+            str(config.JB_JUDGE_WORKERS),
             "--max-retries",
             "3",
             "--timeout-per-rubric",
@@ -1132,6 +1134,7 @@ class JobBenchAdapter:
             "JUDGE_API_KEY": token,
             "JUDGE_REASONING_EFFORT": config.JB_JUDGE_REASONING_EFFORT,
             "VERTEXAI_LOCATION": config.VERTEX_REGION,
+            "AGY_BIN": config.AGY_BIN,
         }
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=1800)

@@ -100,6 +100,10 @@ SOLVER_MODEL_OC = env("HARNESS2_SOLVER_MODEL", "")
 SOLVER_MODEL_CX = env("HARNESS2_CODEX_MODEL", SOLVER_MODEL_OC.split("/", 1)[-1])
 IMPROVER_MODEL = env("HARNESS2_IMPROVER_MODEL", SOLVER_MODEL_OC)
 JUDGE_MODEL = env("HARNESS2_JUDGE_MODEL", "")
+# "openai": an OpenAI-compatible endpoint (Vertex by default). "agy": the Antigravity CLI
+# on the user's Google login, one headless `agy -p` per rubric (JobBench only).
+JUDGE_BACKEND = env("HARNESS2_JUDGE_BACKEND", "openai")
+AGY_JUDGE = JUDGE_BACKEND == "agy"
 
 DEPENDENCY_PINS = {
     "job-bench-eval": "fa03a17f9ff662f136798a274e10011c3aa00fd0",
@@ -137,7 +141,7 @@ LAB_DELIV_CAP = 60000
 JB_JUDGE_PYTHON = jb_repo() / ".venv" / "bin" / "python"
 JB_JUDGE_MODEL = (
     "google/" + JUDGE_MODEL
-    if JUDGE_MODEL.startswith("gemini") and not env("HARNESS2_JUDGE_BASE_URL")
+    if JUDGE_MODEL.startswith("gemini") and not env("HARNESS2_JUDGE_BASE_URL") and not AGY_JUDGE
     else JUDGE_MODEL
 )
 _vertex_host = (
@@ -149,18 +153,31 @@ VERTEX_OPENAI_URL = (
     f"https://{_vertex_host}/v1/projects/{VERTEX_PROJECT}"
     f"/locations/{VERTEX_REGION}/endpoints/openapi"
 )
-JB_JUDGE_API_BASE = env("HARNESS2_JUDGE_BASE_URL", VERTEX_OPENAI_URL if VERTEX_PROJECT else "")
+JB_JUDGE_API_BASE = (
+    "agy"
+    if AGY_JUDGE
+    else env("HARNESS2_JUDGE_BASE_URL", VERTEX_OPENAI_URL if VERTEX_PROJECT else "")
+)
 JB_JUDGE_API_KEY = env("HARNESS2_JUDGE_API_KEY", "")
+AGY_BIN = env("HARNESS2_AGY_BIN", "agy")
+JB_JUDGE_WORKERS = env_int("HARNESS2_JUDGE_WORKERS", 4 if AGY_JUDGE else 8)
 JB_JUDGE_REASONING_EFFORT = "low"
 JB_REPORTING_JUDGE_DETAILS = ""
 JB_OBS_TRUNC = 50000
 
-CODEX_VERSION = "0.144.6"
+# Newer ChatGPT models refuse older CLIs ("requires a newer version of Codex"). WorkBuddy's
+# codex-harness ships a version file for the default only.
+CODEX_VERSION = env("HARNESS2_CODEX_VERSION", "0.144.6")
 CODEX_DIST = str(DEPENDENCIES / "codex" / "dist")
 CODEX_BASE_URL = env("HARNESS2_CODEX_BASE_URL", "")
 CODEX_CONTAINER_URL = env("HARNESS2_CODEX_CONTAINER_URL", CODEX_BASE_URL)
 VERTEX_PROXY_KEY = env("HARNESS2_CODEX_API_KEY", "")
 CODEX_HOME_DIR = DEPENDENCIES / "codex" / "home"
+# "api": the Responses endpoint above. "chatgpt": a ChatGPT subscription login made once
+# with `CODEX_HOME=<CODEX_HOME_DIR> codex login`; a session of its own, so refreshing it
+# never invalidates the user's ~/.codex login.
+CODEX_AUTH = env("HARNESS2_CODEX_AUTH", "api")
+CODEX_CHATGPT = CODEX_AUTH == "chatgpt"
 
 WB_SOLVER_MODEL = "harness2/solver"
 WB_WEB_JUDGE = "harness2/judge"
@@ -171,18 +188,31 @@ WB_MAX_JOBS = {"oc": 1, "cx": 1}
 WB_MAX_TRIALS = {"oc": 2, "cx": 2}
 WB_MODEL_CONNECTION = "local_proxy"
 
-DEFAULT_PROPOSER_CHANNEL = "opencode"
+DEFAULT_PROPOSER_CHANNEL = env("HARNESS2_IMPROVER_CHANNEL", "opencode")
 PROPOSER_MODEL_BY_CHANNEL = {"opencode": IMPROVER_MODEL, "claude_cli": IMPROVER_MODEL}
 PHASE_WIDTH = 2
 TRANSPORT_ATTEMPTS = 2
 PROPOSER_CONCURRENCY = 2
 
+# How the claude_cli channel authenticates: "vertex", or "subscription" -- a claude.ai login
+# made once with `CLAUDE_CONFIG_DIR=<CLAUDE_CONFIG_DIR> claude`. The separate profile keeps
+# the user's own CLAUDE.md, hooks, skills and MCP servers out of the improver's sessions.
+CLAUDE_AUTH = env("HARNESS2_CLAUDE_AUTH", "vertex")
+CLAUDE_CONFIG_DIR = DEPENDENCIES / "claude" / "home"
+
 
 def validate_models(*, judge: bool = False) -> None:
     require("HARNESS2_SOLVER_MODEL", needed_by="executor rollouts")
-    if "/" not in SOLVER_MODEL_OC or "/" not in IMPROVER_MODEL:
-        raise ConfigError("Executor and improver models must use OpenCode's provider/model syntax")
-    if any(m.startswith("google-vertex") for m in (SOLVER_MODEL_OC, IMPROVER_MODEL)):
+    if "/" not in SOLVER_MODEL_OC:
+        raise ConfigError("The executor model must use OpenCode's provider/model syntax")
+    if DEFAULT_PROPOSER_CHANNEL == "opencode" and "/" not in IMPROVER_MODEL:
+        raise ConfigError("The improver model must use OpenCode's provider/model syntax")
+    if DEFAULT_PROPOSER_CHANNEL == "claude_cli" and "/" in IMPROVER_MODEL:
+        raise ConfigError("The claude_cli improver takes a bare Anthropic model id")
+    vertex_improver = DEFAULT_PROPOSER_CHANNEL == "opencode" or CLAUDE_AUTH == "vertex"
+    if SOLVER_MODEL_OC.startswith("google-vertex") or (
+        vertex_improver and IMPROVER_MODEL.startswith("google-vertex")
+    ):
         if not VERTEX_PROJECT:
             raise ConfigError("Set GOOGLE_CLOUD_PROJECT for Vertex AI")
     if judge:

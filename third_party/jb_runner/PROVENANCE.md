@@ -12,7 +12,8 @@ What is still vendored here:
 | `harness_baseline_oc/` | Upstream OpenCode baseline harness tree |
 
 The integration adds editable harness installation and configurable models,
-paths, and endpoints. Local model-provider names, environment variables, and
+paths, and endpoints, and enforces the per-task timeout in Python rather than
+with GNU `timeout`, which macOS lacks. Local model-provider names, environment variables, and
 log paths use the `harness2` namespace. The adapter invokes the Codex launcher
 directly from the package.
 

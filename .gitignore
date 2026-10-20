@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.egg-info/
+runs/
+dependencies/*
+!dependencies/README.md
+!dependencies/ASSETS.json
+!dependencies/PINNED.md
+CLAUDE.local.md
+local/

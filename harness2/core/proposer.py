@@ -104,7 +104,16 @@ class Proposer:
 
     def env(self) -> dict[str, str]:
         e = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
-        if self.spec.kind == "claude_cli":
+        if self.spec.kind == "claude_cli" and config.CLAUDE_AUTH == "subscription":
+            for k in ("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID"):
+                e.pop(k, None)
+            e.update(
+                {
+                    "CLAUDE_CONFIG_DIR": str(config.CLAUDE_CONFIG_DIR),
+                    "ANTHROPIC_MODEL": self.spec.model,
+                }
+            )
+        elif self.spec.kind == "claude_cli":
             e.update(
                 {
                     "CLAUDE_CODE_USE_VERTEX": "1",

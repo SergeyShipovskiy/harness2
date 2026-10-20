@@ -233,18 +233,33 @@ CODEX_CONFIG_REMEDY = "rerun harness2-setup <bench> --substrate cx"
 CODEX_PROVIDER = "harness2"
 
 
+def codex_login_command() -> str:
+    return f"CODEX_HOME={config.CODEX_HOME_DIR} {Path(config.CODEX_DIST) / 'codex'} login"
+
+
 def configure_codex(*, dry_run=False):
-    config.require("HARNESS2_CODEX_BASE_URL", needed_by="Codex setup")
-    body = (
-        f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n"
-        f"model_provider = {json.dumps(CODEX_PROVIDER)}\n"
-        f'[model_providers.{CODEX_PROVIDER}]\nname = "Configured Responses endpoint"\n'
-        f"base_url = {json.dumps(config.CODEX_BASE_URL)}\n"
-        'wire_api = "responses"\nenv_key = "VERTEX_PROXY_KEY"\n'
-    )
+    if not config.SOLVER_MODEL_CX:
+        config.require("HARNESS2_CODEX_MODEL", needed_by="Codex setup")
+    if config.CODEX_CHATGPT:
+        body = (
+            f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n"
+            'forced_login_method = "chatgpt"\n'
+            'cli_auth_credentials_store = "file"\n'
+        )
+    else:
+        config.require("HARNESS2_CODEX_BASE_URL", needed_by="Codex setup")
+        body = (
+            f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n"
+            f"model_provider = {json.dumps(CODEX_PROVIDER)}\n"
+            f'[model_providers.{CODEX_PROVIDER}]\nname = "Configured Responses endpoint"\n'
+            f"base_url = {json.dumps(config.CODEX_BASE_URL)}\n"
+            'wire_api = "responses"\nenv_key = "VERTEX_PROXY_KEY"\n'
+        )
     if not dry_run:
         config.CODEX_HOME_DIR.mkdir(parents=True, exist_ok=True)
         (config.CODEX_HOME_DIR / "config.toml").write_text(body, encoding="utf-8")
+    if config.CODEX_CHATGPT and not (config.CODEX_HOME_DIR / "auth.json").is_file():
+        print(f"Log Codex in to ChatGPT once before a run: {codex_login_command()}", flush=True)
 
 
 def codex_config_error() -> str | None:
@@ -267,6 +282,19 @@ def codex_config_error() -> str | None:
         )
     except tomllib.TOMLDecodeError as exc:
         return f"{path} is not valid TOML ({exc}); {CODEX_CONFIG_REMEDY}"
+    if config.CODEX_CHATGPT:
+        stale = []
+        if data.get("model") != config.SOLVER_MODEL_CX:
+            stale.append(
+                f"model is {data.get('model')!r}, configuration says {config.SOLVER_MODEL_CX!r}"
+            )
+        if data.get("model_provider") or data.get("forced_login_method") != "chatgpt":
+            stale.append("it routes Codex to a Responses endpoint, not the ChatGPT login")
+        if stale:
+            return f"{path} is stale ({'; '.join(stale)}); {CODEX_CONFIG_REMEDY}"
+        if not (config.CODEX_HOME_DIR / "auth.json").is_file():
+            return f"Codex has no ChatGPT login in {config.CODEX_HOME_DIR}; run: {codex_login_command()}"
+        return None
     provider = data.get("model_provider")
     block = (data.get("model_providers") or {}).get(provider) or {}
     stale = [

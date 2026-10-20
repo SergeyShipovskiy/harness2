@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -76,9 +77,14 @@ def check(adapter, *, judge=False) -> list[str]:
     if not (config.OPENCODE_DIR / "node_modules").is_dir():
         errors.append(f"OpenCode dependencies missing; run harness2-setup {bench}")
 
+    if config.DEFAULT_PROPOSER_CHANNEL == "claude_cli" and config.CLAUDE_AUTH == "subscription":
+        claude_login_errors(errors)
+    vertex_judge = not (bench == "jb" and config.AGY_JUDGE) and (
+        bench == "wb" or config.JUDGE_MODEL.startswith(("claude", "gemini"))
+    )
     if any(
         m.startswith("google-vertex") for m in (config.SOLVER_MODEL_OC, config.IMPROVER_MODEL)
-    ) or (judge and (bench == "wb" or config.JUDGE_MODEL.startswith(("claude", "gemini")))):
+    ) or (judge and vertex_judge):
         probe(
             "Google Application Default Credentials",
             ["gcloud", "auth", "application-default", "print-access-token"],
@@ -101,11 +107,13 @@ def check(adapter, *, judge=False) -> list[str]:
                 "import pandas, openpyxl, docx, mammoth, pdfplumber, pptx, openai",
             ],
         )
-        if not config.JB_JUDGE_API_BASE:
+        if config.AGY_JUDGE:
+            agy_judge_errors(errors)
+        elif not config.JB_JUDGE_API_BASE:
             errors.append(
                 "Set GOOGLE_CLOUD_PROJECT or HARNESS2_JUDGE_BASE_URL for JobBench judging"
             )
-        if (
+        elif (
             config.JUDGE_MODEL
             and not config.JB_JUDGE_API_KEY
             and not config.JUDGE_MODEL.startswith("gemini")
@@ -142,6 +150,44 @@ def check(adapter, *, judge=False) -> list[str]:
             except (OSError, ValueError, KeyError, TypeError):
                 errors.append(f"WorkBuddy {role} configuration missing; rerun setup")
     return errors
+
+
+def claude_login_errors(errors: list[str]) -> None:
+    """The improver's Claude Code profile holds a claude.ai login."""
+    remedy = f"run once: CLAUDE_CONFIG_DIR={config.CLAUDE_CONFIG_DIR} claude, then /login"
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config.CLAUDE_CONFIG_DIR)}
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_VERTEX"):
+        env.pop(k, None)
+    try:
+        r = subprocess.run(
+            ["claude", "auth", "status"], env=env, capture_output=True, text=True, timeout=30
+        )
+        status = json.loads(r.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+        errors.append(f"claude auth status failed ({type(exc).__name__}); {remedy}")
+        return
+    if not status.get("loggedIn"):
+        errors.append(f"The improver's Claude profile has no claude.ai login; {remedy}")
+
+
+def agy_judge_errors(errors: list[str]) -> None:
+    """The Antigravity CLI is installed, logged in, and offers the judge model."""
+    remedy = "install agy and run it once interactively to log in (docs/SETUP.md)"
+    try:
+        r = subprocess.run(
+            [config.AGY_BIN, "models"], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        errors.append(f"Antigravity CLI ({config.AGY_BIN}): {type(exc).__name__}; {remedy}")
+        return
+    slugs = {line.split("\t", 1)[0].strip() for line in r.stdout.splitlines() if "\t" in line}
+    if r.returncode or not slugs:
+        errors.append(f"Antigravity CLI could not list models; {remedy}")
+    elif config.JUDGE_MODEL not in slugs:
+        errors.append(
+            f"HARNESS2_JUDGE_MODEL {config.JUDGE_MODEL!r} is not an agy model; "
+            f"choose one of: {', '.join(sorted(slugs))}"
+        )
 
 
 def require_ready(adapter, *, judge=False):

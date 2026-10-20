@@ -939,6 +939,11 @@ class LabAdapter:
             _require_runner(config.lab_repo() / "opencode" / "run_opencode.py")
             _require_runtime_scripts()
         else:
+            if config.CODEX_CHATGPT:
+                raise config.ConfigError(
+                    "HARNESS2_CODEX_AUTH=chatgpt is supported on JobBench only; LAB's Codex "
+                    "runner needs a Responses endpoint"
+                )
             _require_runner(config.lab_repo() / "external" / "adapt_runs_cx" / "run_codex_lab.py")
         try:
             r = subprocess.run(
