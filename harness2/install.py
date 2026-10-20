@@ -255,15 +255,16 @@ def codex_login_command(
 
 
 def configure_codex(*, dry_run=False):
-    if not config.SOLVER_MODEL_CX:
-        config.require("HARNESS2_CODEX_MODEL", needed_by="Codex setup")
     if config.CODEX_CHATGPT:
+        # The model line is the executor's; a Codex that only improves passes --model itself.
         body = (
-            f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n"
-            'forced_login_method = "chatgpt"\n'
-            'cli_auth_credentials_store = "file"\n'
+            (f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n" if config.SOLVER_MODEL_CX else "")
+            + 'forced_login_method = "chatgpt"\n'
+            + 'cli_auth_credentials_store = "file"\n'
         )
     else:
+        if not config.SOLVER_MODEL_CX:
+            config.require("HARNESS2_CODEX_MODEL", needed_by="Codex setup")
         config.require("HARNESS2_CODEX_BASE_URL", needed_by="Codex setup")
         body = (
             f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n"

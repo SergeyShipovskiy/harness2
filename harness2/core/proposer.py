@@ -113,6 +113,10 @@ class Proposer:
                     "ANTHROPIC_MODEL": self.spec.model,
                 }
             )
+        elif self.spec.kind == "codex_cli":
+            e.pop("OPENAI_API_KEY", None)
+            e.pop("OPENAI_BASE_URL", None)
+            e["CODEX_HOME"] = str(config.CODEX_HOME_DIR)
         elif self.spec.kind == "claude_cli":
             e.update(
                 {
@@ -168,9 +172,10 @@ class Proposer:
                 if context_dir and Path(context_dir).is_dir():
                     shutil.copytree(context_dir, tmp / "context", dirs_exist_ok=True)
                 with _SEM if _SEM is not None else contextlib.nullcontext():
-                    text, cost, err = (
-                        self._claude_cli if self.spec.kind == "claude_cli" else self._opencode
-                    )(tmp, mission, system, wall)
+                    run = {"claude_cli": self._claude_cli, "codex_cli": self._codex_cli}.get(
+                        self.spec.kind, self._opencode
+                    )
+                    text, cost, err = run(tmp, mission, system, wall)
                 spent_usd += cost
                 if not text.strip():
                     last = err or "empty reply"
@@ -258,6 +263,49 @@ class Proposer:
         elif p.returncode != 0 and not text.strip():
             err = f"rc={p.returncode}: {(p.stderr or '')[-300:]}"
         return text, float(payload.get("total_cost_usd") or 0.0), err
+
+    def _codex_cli(self, cwd: Path, mission: str, system: str, wall: int) -> tuple[str, float, str]:
+        """`codex exec` on the ChatGPT login in CODEX_HOME; writes confined to the session dir.
+
+        Codex has no system-prompt flag, so the system text leads the prompt. The reply is
+        the final message; a subscription session reports no dollar cost.
+        """
+        last = cwd / ".codex-last-message.md"
+        cmd = [
+            str(Path(config.CODEX_DIST) / "codex"),
+            "exec",
+            "--model",
+            self.spec.model,
+            "-c",
+            f'model_reasoning_effort="{self.spec.effort}"',
+            "--sandbox",
+            "workspace-write",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "-o",
+            str(last),
+            "-C",
+            str(cwd),
+            "--",
+            "-",
+        ]
+        stdin = f"# SYSTEM INSTRUCTIONS\n\n{system}\n\n# END\n\n{mission}" if system else mission
+        p = subprocess.run(
+            cmd,
+            input=stdin,
+            cwd=cwd,
+            env=self.env(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=wall,
+        )
+        text = last.read_text(encoding="utf-8", errors="replace") if last.is_file() else ""
+        last.unlink(missing_ok=True)
+        err = "" if text.strip() else f"rc={p.returncode}: {(p.stderr or '')[-300:]}"
+        return text, 0.0, err
 
     def _opencode(self, cwd: Path, mission: str, system: str, wall: int) -> tuple[str, float, str]:
         (cwd / "MISSION.md").write_text(

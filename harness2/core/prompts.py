@@ -614,6 +614,27 @@ class _SurfaceText:
     tts_surface: str
 
 
+def _to_claude(text: str) -> str:
+    """The Codex surface text in Claude Code's layout; the levers and rules are the same."""
+    text = text.replace(
+        "a `name:` line is optional and must match the directory (it\noverrides it)",
+        "a `name:` line equal to the\ndirectory name is REQUIRED as well",
+    )
+    for old, new in (
+        (
+            "ONE JSON file, Claude-Code hook schema: a top-level",
+            "ONE JSON file holding only hooks, Claude Code's schema: a top-level",
+        ),
+        ("AGENTS.md", "CLAUDE.md"),
+        (".agents/skills", ".claude/skills"),
+        (".codex/hooks.json", ".claude/settings.json"),
+    ):
+        if old not in text:
+            raise ValueError(f"Claude surface text: {old!r} not found")
+        text = text.replace(old, new)
+    return text
+
+
 def _build_surface_texts() -> dict[str, _SurfaceText]:
     oc_tts = "\n\n".join(
         [
@@ -629,7 +650,29 @@ def _build_surface_texts() -> dict[str, _SurfaceText]:
             _surface_part(_SURFACE_CODEX, "# HOW TO MAKE A CHANGE"),
         ]
     )
+    cc_surface = _to_claude(_SURFACE_CODEX)
+    cc_tts = "\n\n".join(
+        [
+            _to_claude(_TTS_SURFACE_HEAD_CODEX),
+            _surface_part(cc_surface, "A skill only exists", "THE DELIVERABLE'S SHAPE"),
+            _surface_part(cc_surface, "# HOW TO MAKE A CHANGE"),
+        ]
+    )
     return {
+        "claude": _SurfaceText(
+            surface_md=cc_surface,
+            inv=_INV_TEMPLATE.replace(
+                "__LOOP_LEVER__",
+                "hook in `.claude/settings.json` -- for example, blocking a finish before a "
+                "{deliverable} exists, with a corrective reason",
+            ),
+            dom=_DOM_TEMPLATE.replace(
+                "__TRIGGER_SENTENCE__",
+                "A skill exists only once its name appears in `CLAUDE.md` as a trigger: write "
+                "that trigger line in the same edit.",
+            ),
+            tts_surface=cc_tts,
+        ),
         "opencode": _SurfaceText(
             surface_md=_SURFACE_OPENCODE,
             inv=_INV_TEMPLATE.replace(

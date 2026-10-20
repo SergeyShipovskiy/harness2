@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from . import config
 from .install import PATCHES, missing_runners
@@ -80,6 +81,14 @@ def check(adapter, *, judge=False) -> list[str]:
 
     if config.DEFAULT_PROPOSER_CHANNEL == "claude_cli" and config.CLAUDE_AUTH == "subscription":
         claude_login_errors(errors)
+    if config.DEFAULT_PROPOSER_CHANNEL == "codex_cli":
+        codex_login_errors(
+            errors,
+            Path(config.CODEX_DIST) / "codex",
+            config.CODEX_HOME_DIR,
+            "improver",
+            f"harness2-setup {bench}",
+        )
     vertex_judge = not (bench == "jb" and config.CODEX_JUDGE) and (
         bench == "wb" or config.JUDGE_MODEL.startswith(("claude", "gemini"))
     )
@@ -109,7 +118,9 @@ def check(adapter, *, judge=False) -> list[str]:
             ],
         )
         if config.CODEX_JUDGE:
-            codex_judge_errors(errors)
+            codex_login_errors(
+                errors, config.JUDGE_CODEX_BIN, config.JUDGE_CODEX_HOME, "judge", "harness2-setup jb"
+            )
         elif not config.JB_JUDGE_API_BASE:
             errors.append(
                 "Set GOOGLE_CLOUD_PROJECT or HARNESS2_JUDGE_BASE_URL for JobBench judging"
@@ -171,13 +182,12 @@ def claude_login_errors(errors: list[str]) -> None:
         errors.append(f"The improver's Claude profile has no claude.ai login; {remedy}")
 
 
-def codex_judge_errors(errors: list[str]) -> None:
-    """The judge's own Codex is installed and logged in to ChatGPT."""
+def codex_login_errors(errors: list[str], binary: Path, home: Path, who: str, setup: str) -> None:
+    """A Codex install exists at `binary` and its CODEX_HOME holds a ChatGPT login."""
     from .install import codex_login_command
 
-    binary, home = config.JUDGE_CODEX_BIN, config.JUDGE_CODEX_HOME
     if not binary.is_file():
-        errors.append(f"The judge's Codex is not installed at {binary}; run harness2-setup jb")
+        errors.append(f"The {who}'s Codex is not installed at {binary}; run {setup}")
         return
     try:
         r = subprocess.run(
@@ -188,10 +198,12 @@ def codex_judge_errors(errors: list[str]) -> None:
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        errors.append(f"judge codex login status failed ({type(exc).__name__})")
+        errors.append(f"{who} codex login status failed ({type(exc).__name__})")
         return
     if r.returncode or "ChatGPT" not in r.stdout + r.stderr:
-        errors.append(f"The judge's Codex has no ChatGPT login; run: {codex_login_command(binary, home)}")
+        errors.append(
+            f"The {who}'s Codex has no ChatGPT login; run: {codex_login_command(binary, home)}"
+        )
 
 
 def require_ready(adapter, *, judge=False):

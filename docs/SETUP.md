@@ -140,6 +140,43 @@ changing either. `harness2-check` reports stale configuration until then.
 Codex runs with its sandbox disabled. Review the
 [executor network restrictions](EXPERIMENTS.md#web-access) before evaluation.
 
+## Subscriptions: Codex and Claude Code roles
+
+JobBench can run entirely on a ChatGPT and a Claude subscription, with no API keys
+or Vertex project. Three role lines in `.env` choose the tool and model for each
+role, as `<tool>:<model>` with tool `codex`, `claude` or `opencode`:
+
+```bash
+HARNESS2_EXECUTOR=claude:claude-opus-5-5
+HARNESS2_IMPROVER=codex:gpt-6-astra
+HARNESS2_JUDGE=codex:gpt-6.1-sol
+```
+
+Swap the first two lines to swap who executes and who improves. `--substrate`
+defaults to the executor's tool (`cx` for Codex, `cc` for Claude Code), and the
+older per-setting variables still override the role lines.
+
+Each tool runs in its own profile under `dependencies/`, never the user's
+`~/.codex` or `~/.claude`, so personal instructions, hooks and MCP servers stay
+out of the runs. Log each profile in once after setup:
+
+```bash
+CODEX_HOME=dependencies/codex/home dependencies/codex/dist/codex login
+CODEX_HOME=dependencies/codex-judge/home dependencies/codex-judge/dist/codex login
+CLAUDE_CONFIG_DIR=dependencies/claude/home claude auth login --claudeai
+```
+
+The judge's Codex is installed and logged in apart from the executor's
+(`HARNESS2_JUDGE_CODEX_VERSION`), so upgrading the executor's CLI does not change
+scoring. It grades all of a task's rubrics in one read-only `codex exec` call.
+Newer ChatGPT models refuse older CLIs; set `HARNESS2_CODEX_VERSION` to a release
+that serves your model. `harness2-check` verifies every login.
+
+The Claude Code executor lays the harness out natively: `CLAUDE.md`,
+`.claude/skills/<name>/SKILL.md` (frontmatter `name:` equal to the directory),
+hooks in `.claude/settings.json`, and `sub_agents/<name>/AGENT.md` installed as
+`.claude/agents/<name>.md`. Subscription modes are wired for JobBench only.
+
 ## Network access during setup
 
 Setup downloads dependencies from the following hosts:

@@ -23,13 +23,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .. import config
 from ..core import library as LIB
 from ..core import schedule as SCHED
 from ..core.spec import BenchmarkAdapter
 
 BENCHES = ("jb", "wb", "lab")
 WB_SUBSETS = ("office", "web", "code")
-SUBSTRATES = ("oc", "cx")
+SUBSTRATES = ("oc", "cx", "cc")
 
 MODES_DEFAULT = "parallel"
 MODES_HELP = (
@@ -50,6 +51,8 @@ def make_adapter(
         raise ValueError(f"unknown bench {bench!r}; expected one of {BENCHES}")
     if substrate not in SUBSTRATES:
         raise ValueError(f"unknown substrate {substrate!r}; expected one of {SUBSTRATES}")
+    if substrate == "cc" and bench != "jb":
+        raise ValueError("the Claude Code executor (cc) is wired for --bench jb only")
     if bench == "wb":
         if subset not in WB_SUBSETS:
             raise ValueError(f"--bench wb needs --subset from {WB_SUBSETS}, got {subset!r} ")
@@ -102,9 +105,10 @@ def add_cell_args(p: argparse._ActionsContainer) -> None:
     )
     p.add_argument(
         "--substrate",
-        default="oc",
+        default=config.DEFAULT_SUBSTRATE,
         choices=SUBSTRATES,
-        help="task-executor substrate: oc (opencode) | cx (codex)",
+        help="task-executor substrate: oc (opencode) | cx (codex) | cc (claude code); "
+        "defaults to the tool in HARNESS2_EXECUTOR",
     )
 
 

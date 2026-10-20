@@ -39,6 +39,7 @@ from ..core import tree as HT
 from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
 from ..install import codex_config_error
 from ..substrate.base import Install, RunRequest
+from ..substrate.claude import ClaudeSubstrate
 from ..substrate.codex import CodexSubstrate
 from ..substrate.opencode import OUTPUT_TOKEN_MAX, OpencodeSubstrate
 from .tasks import discover, select
@@ -50,6 +51,27 @@ OC_RUNNER = Path(__file__).resolve().parent / "jb_opencode_runner.py"
 CX_RUNNER = _RUNNER_DIR / "run_benchmark_codex_cli_adapt.sh"
 OC_BASE_HARNESS = _RUNNER_DIR / "harness_baseline_oc"
 CX_BASE_HARNESS = _RUNNER_DIR / "codex_base_harness"
+CC_BASE_HARNESS = _RUNNER_DIR / "claude_base_harness"
+
+# The Codex runner's prompt, verbatim, so the two executors are asked the same thing.
+_ROLLOUT_PROMPT = """=== TASK FOLDER ===
+{task}
+
+=== INSTRUCTIONS ===
+1. Read the TASK_INSTRUCTIONS.txt file in the task folder above
+2. Based on the Reference Files section in TASK_INSTRUCTIONS.txt, read the corresponding files from the same task folder using appropriate tools.
+3. Complete the task as specified in TASK_INSTRUCTIONS.txt
+4. Only save the final deliverables to the output directory specified below. Do not save any intermediate or temporary files.
+
+=== OUTPUT DIRECTORY ===
+{out}
+
+IMPORTANT:
+- All reference files are in the task folder: {task}
+- Only save the final deliverables to the output directory {out}. Do not save any intermediate or temporary files.
+- You MUST only access files within {ws} or search online for new reference files if you find needed. Do NOT access any files or directories in this system outside of this path.
+- If you encounter ambiguous or conflicting information, analyze the conflict, explain your reasoning, and justify the approach you choose.
+- If a file cannot be read directly (e.g., .xlsx, .docx, .db, .pptx), use appropriate tools, MCP servers, or code to extract and process its contents."""
 
 
 def run_detached(cmd: list[str], *, timeout: int, **kw) -> None:
@@ -494,9 +516,9 @@ def render_opencode_tree(staged: Path, render_dir: Path, ctx: dict) -> None:
             shutil.copy(p, rd / ".opencode" / "plugin" / p.name)
 
 
-_INSTALL_MODE = {"oc": "workspace_agents_md", "cx": "codex_root"}
+_INSTALL_MODE = {"oc": "workspace_agents_md", "cx": "codex_root", "cc": "claude_root"}
 
-_DEFAULT_TIMEOUT = {"oc": 2400, "cx": 3600}
+_DEFAULT_TIMEOUT = {"oc": 2400, "cx": 3600, "cc": 3600}
 
 
 def _channels() -> dict:
@@ -507,7 +529,7 @@ def _channels() -> dict:
 
 def make_spec(substrate: str) -> BenchSpec:
     if substrate not in _INSTALL_MODE:
-        raise ValueError(f"JobBench substrate must be 'oc' or 'cx', got {substrate!r}")
+        raise ValueError(f"JobBench substrate must be 'oc', 'cx' or 'cc', got {substrate!r}")
     return BenchSpec(
         name="jb",
         runs_root=config.RUNS / "jb",
@@ -516,7 +538,7 @@ def make_spec(substrate: str) -> BenchSpec:
         channels=_channels(),
         domain_word="profession",
         leak_globs=("RUBRICS.json", "eval_result/**", "expected/**", "reference/**"),
-        allow_subagents=(substrate == "oc"),
+        allow_subagents=(substrate in ("oc", "cc")),
         obs_trunc=config.JB_OBS_TRUNC,
         proposer_deliverables="contents",
     )
@@ -632,12 +654,11 @@ class JobBenchAdapter:
     ):
         self.split_file = split_file
         self.spec = make_spec(substrate)
-        launcher = self._launch_opencode if substrate == "oc" else self._launch_codex
-        self.substrate = (
-            OpencodeSubstrate(launcher=launcher)
-            if substrate == "oc"
-            else CodexSubstrate(launcher=launcher)
-        )
+        self.substrate = {
+            "oc": lambda: OpencodeSubstrate(launcher=self._launch_opencode),
+            "cx": lambda: CodexSubstrate(launcher=self._launch_codex),
+            "cc": lambda: ClaudeSubstrate(launcher=self._launch_claude),
+        }[substrate]()
         self.timeout = int(timeout or _DEFAULT_TIMEOUT[substrate])
         self.store = Path(store_root) if store_root else config.RUNS / "jb" / "dataset"
 
@@ -829,6 +850,53 @@ class JobBenchAdapter:
         self._run_runner(CX_RUNNER, env, wall=t + 600, label=label)
         return [self._require_artifacts(task_id, label)]
 
+    def _launch_claude(self, req: RunRequest, install: Install) -> list[Path]:
+        """One `claude -p` rollout, laid out like the Codex runner's: a scratch workspace with
+        task_folder/ and output/, the harness at its root, deliverables moved to model_output."""
+        task_id, label, t = self._launch_common(req)
+        self.substrate.preflight()
+        traj_dir = self._traj_dir(task_id, label)
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        traj = traj_dir / f"{task_id.replace('/', '_')}_{label}_attempt1_{stamp}.jsonl"
+        ws = Path(tempfile.mkdtemp(prefix="claude_jb_"))
+        try:
+            shutil.copytree(self.store / task_id / "task_folder", ws / "task_folder")
+            (ws / "output").mkdir()
+            shutil.copytree(install.staging_dir, ws, dirs_exist_ok=True)
+            prompt = _ROLLOUT_PROMPT.format(task=ws / "task_folder", out=ws / "output", ws=ws)
+            argv = self.substrate.exec_argv(config.CLAUDE_MODEL, effort=config.CLAUDE_EFFORT)
+            with traj.open("w", encoding="utf-8") as fo, traj.with_suffix(".stderr.log").open(
+                "w", encoding="utf-8"
+            ) as fe:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=ws,
+                    env=self.substrate.exec_env(os.environ),
+                    stdin=subprocess.PIPE,
+                    stdout=fo,
+                    stderr=fe,
+                    text=True,
+                    start_new_session=True,
+                )
+                try:
+                    proc.communicate(prompt, timeout=t)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait()
+                    raise RuntimeError(
+                        f"claude rollout timed out after {t}s for {label}; left UNMARKED so "
+                        f"the next attempt re-rolls"
+                    ) from None
+            if any(p.is_file() for p in (ws / "output").rglob("*")):
+                out = self._out_dir(task_id, label)
+                out.mkdir(parents=True, exist_ok=True)
+                for item in (ws / "output").iterdir():
+                    shutil.move(str(item), out / item.name)
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+        return [self._require_artifacts(task_id, label)]
+
     def _run_runner(self, runner: Path, env: dict, *, wall: int, label: str) -> None:
         """Run the packaged launcher; timeouts leave the rollout incomplete."""
         if not runner.is_file():
@@ -948,7 +1016,9 @@ class JobBenchAdapter:
         return str(self._extract(d)["flat"]) if d.is_dir() else ""
 
     def base_harness(self) -> Path:
-        base = OC_BASE_HARNESS if self.substrate.name == "oc" else CX_BASE_HARNESS
+        base = {"oc": OC_BASE_HARNESS, "cx": CX_BASE_HARNESS, "cc": CC_BASE_HARNESS}[
+            self.substrate.name
+        ]
         if not HT.is_tree(self.substrate.surface(), base):
             raise FileNotFoundError(
                 f"JobBench base harness missing or not a {self.substrate.surface().name} "

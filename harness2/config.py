@@ -96,13 +96,47 @@ if VERTEX_PROJECT:
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", VERTEX_REGION)
 
 
-SOLVER_MODEL_OC = env("HARNESS2_SOLVER_MODEL", "")
-SOLVER_MODEL_CX = env("HARNESS2_CODEX_MODEL", SOLVER_MODEL_OC.split("/", 1)[-1])
-IMPROVER_MODEL = env("HARNESS2_IMPROVER_MODEL", SOLVER_MODEL_OC)
-JUDGE_MODEL = env("HARNESS2_JUDGE_MODEL", "")
+TOOLS = ("opencode", "codex", "claude")
+SUBSTRATE_OF_TOOL = {"opencode": "oc", "codex": "cx", "claude": "cc"}
+CHANNEL_OF_TOOL = {"opencode": "opencode", "codex": "codex_cli", "claude": "claude_cli"}
+
+
+def _role(name: str) -> tuple[str, str]:
+    """`<tool>:<model>` from one role variable, e.g. HARNESS2_EXECUTOR=claude:claude-opus-5-5.
+
+    Swapping two role lines swaps who executes and who improves; ("", "") when unset.
+    """
+    raw = env(name, "")
+    if not raw:
+        return "", ""
+    tool, _, model = raw.partition(":")
+    if tool not in TOOLS or not model:
+        raise ConfigError(f"{name} must be <tool>:<model> with tool in {TOOLS}, got {raw!r}")
+    return tool, model
+
+
+EXECUTOR_TOOL, _EXECUTOR_MODEL = _role("HARNESS2_EXECUTOR")
+IMPROVER_TOOL, _IMPROVER_MODEL = _role("HARNESS2_IMPROVER")
+JUDGE_TOOL, _JUDGE_MODEL = _role("HARNESS2_JUDGE")
+DEFAULT_SUBSTRATE = SUBSTRATE_OF_TOOL.get(EXECUTOR_TOOL, "oc")
+
+
+def _for(tool: str, role_tool: str, role_model: str) -> str:
+    return role_model if role_tool == tool else ""
+
+
+SOLVER_MODEL_OC = env("HARNESS2_SOLVER_MODEL", _for("opencode", EXECUTOR_TOOL, _EXECUTOR_MODEL))
+SOLVER_MODEL_CX = env(
+    "HARNESS2_CODEX_MODEL",
+    _for("codex", EXECUTOR_TOOL, _EXECUTOR_MODEL) or SOLVER_MODEL_OC.split("/", 1)[-1],
+)
+CLAUDE_MODEL = env("HARNESS2_CLAUDE_MODEL", _for("claude", EXECUTOR_TOOL, _EXECUTOR_MODEL))
+CLAUDE_EFFORT = env("HARNESS2_CLAUDE_EFFORT", "high")
+IMPROVER_MODEL = env("HARNESS2_IMPROVER_MODEL", _IMPROVER_MODEL or SOLVER_MODEL_OC)
+JUDGE_MODEL = env("HARNESS2_JUDGE_MODEL", _JUDGE_MODEL)
 # "openai": an OpenAI-compatible endpoint (Vertex by default), one call per rubric.
 # "codex": `codex exec` on the judge's own ChatGPT login, all rubrics in one call (JobBench only).
-JUDGE_BACKEND = env("HARNESS2_JUDGE_BACKEND", "openai")
+JUDGE_BACKEND = env("HARNESS2_JUDGE_BACKEND", "codex" if JUDGE_TOOL == "codex" else "openai")
 CODEX_JUDGE = JUDGE_BACKEND == "codex"
 
 DEPENDENCY_PINS = {
@@ -174,7 +208,9 @@ CODEX_HOME_DIR = DEPENDENCIES / "codex" / "home"
 # "api": the Responses endpoint above. "chatgpt": a ChatGPT subscription login made once
 # with `CODEX_HOME=<CODEX_HOME_DIR> codex login`; a session of its own, so refreshing it
 # never invalidates the user's ~/.codex login.
-CODEX_AUTH = env("HARNESS2_CODEX_AUTH", "api")
+CODEX_AUTH = env(
+    "HARNESS2_CODEX_AUTH", "chatgpt" if "codex" in (EXECUTOR_TOOL, IMPROVER_TOOL) else "api"
+)
 CODEX_CHATGPT = CODEX_AUTH == "chatgpt"
 # The judge's Codex is installed and logged in apart from the executor's: upgrading the
 # executor's CLI must not change how runs are scored, and the judge never shares a
@@ -193,8 +229,14 @@ WB_MAX_JOBS = {"oc": 1, "cx": 1}
 WB_MAX_TRIALS = {"oc": 2, "cx": 2}
 WB_MODEL_CONNECTION = "local_proxy"
 
-DEFAULT_PROPOSER_CHANNEL = env("HARNESS2_IMPROVER_CHANNEL", "opencode")
-PROPOSER_MODEL_BY_CHANNEL = {"opencode": IMPROVER_MODEL, "claude_cli": IMPROVER_MODEL}
+DEFAULT_PROPOSER_CHANNEL = env(
+    "HARNESS2_IMPROVER_CHANNEL", CHANNEL_OF_TOOL.get(IMPROVER_TOOL, "opencode")
+)
+PROPOSER_MODEL_BY_CHANNEL = {
+    "opencode": IMPROVER_MODEL,
+    "claude_cli": IMPROVER_MODEL,
+    "codex_cli": IMPROVER_MODEL,
+}
 PHASE_WIDTH = 2
 TRANSPORT_ATTEMPTS = 2
 PROPOSER_CONCURRENCY = 2
@@ -202,7 +244,8 @@ PROPOSER_CONCURRENCY = 2
 # How the claude_cli channel authenticates: "vertex", or "subscription" -- a claude.ai login
 # made once with `CLAUDE_CONFIG_DIR=<CLAUDE_CONFIG_DIR> claude`. The separate profile keeps
 # the user's own CLAUDE.md, hooks, skills and MCP servers out of the improver's sessions.
-CLAUDE_AUTH = env("HARNESS2_CLAUDE_AUTH", "vertex")
+CLAUDE_AUTH = env("HARNESS2_CLAUDE_AUTH", "subscription" if IMPROVER_TOOL == "claude" else "vertex")
+# The Claude Code profile for both roles: the executor always runs on its claude.ai login.
 CLAUDE_CONFIG_DIR = DEPENDENCIES / "claude" / "home"
 
 
@@ -216,17 +259,21 @@ def validate_models(*, judge: bool = False, substrate: str = "oc") -> None:
         require("HARNESS2_SOLVER_MODEL", needed_by="executor rollouts")
         if "/" not in SOLVER_MODEL_OC:
             raise ConfigError("The executor model must use OpenCode's provider/model syntax")
-    elif not SOLVER_MODEL_CX:
+    elif substrate == "cx" and not SOLVER_MODEL_CX:
         require("HARNESS2_CODEX_MODEL", needed_by="Codex rollouts")
+    elif substrate == "cc" and not CLAUDE_MODEL:
+        require("HARNESS2_CLAUDE_MODEL", needed_by="Claude Code rollouts")
     if DEFAULT_PROPOSER_CHANNEL == "opencode" and "/" not in IMPROVER_MODEL:
         raise ConfigError("The improver model must use OpenCode's provider/model syntax")
-    if DEFAULT_PROPOSER_CHANNEL == "claude_cli" and "/" in IMPROVER_MODEL:
-        raise ConfigError("The claude_cli improver takes a bare Anthropic model id")
+    if DEFAULT_PROPOSER_CHANNEL in ("claude_cli", "codex_cli") and "/" in IMPROVER_MODEL:
+        raise ConfigError(f"The {DEFAULT_PROPOSER_CHANNEL} improver takes a bare model id")
+    if DEFAULT_PROPOSER_CHANNEL == "codex_cli" and not CODEX_CHATGPT:
+        raise ConfigError("The codex_cli improver runs on a ChatGPT login: HARNESS2_CODEX_AUTH=chatgpt")
     vertex_improver = DEFAULT_PROPOSER_CHANNEL == "opencode" or CLAUDE_AUTH == "vertex"
     if SOLVER_MODEL_OC.startswith("google-vertex") or (
         vertex_improver and IMPROVER_MODEL.startswith("google-vertex")
     ):
         if not VERTEX_PROJECT:
             raise ConfigError("Set GOOGLE_CLOUD_PROJECT for Vertex AI")
-    if judge:
+    if judge and not JUDGE_MODEL:
         require("HARNESS2_JUDGE_MODEL", needed_by="benchmark judging")
