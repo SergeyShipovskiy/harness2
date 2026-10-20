@@ -44,10 +44,11 @@ def check(adapter, *, judge=False) -> list[str]:
             errors.append(f"{label}: {type(exc).__name__}; see README.md")
             return False
 
+    opencode = config.needs_opencode(adapter.substrate.name)
     for validate in (
-        lambda: config.validate_models(judge=judge),
+        lambda: config.validate_models(judge=judge, substrate=adapter.substrate.name),
         adapter.tasks,
-        OpencodeSubstrate().preflight,
+        *((OpencodeSubstrate().preflight,) if opencode else ()),
         adapter.preflight,
     ):
         try:
@@ -58,7 +59,7 @@ def check(adapter, *, judge=False) -> list[str]:
     bench = adapter.spec.name.split("-", 1)[0]
     name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[bench]
     repo = config.DEPENDENCIES / name
-    for dependency in (name, "opencode"):
+    for dependency in (name, "opencode") if opencode else (name,):
         target = config.DEPENDENCIES / dependency
         if (target / ".git").exists():
             try:
@@ -74,12 +75,12 @@ def check(adapter, *, judge=False) -> list[str]:
             f"{dependency} patch",
             ["git", "-C", target, "apply", "--reverse", "--check", patch],
         )
-    if not (config.OPENCODE_DIR / "node_modules").is_dir():
+    if opencode and not (config.OPENCODE_DIR / "node_modules").is_dir():
         errors.append(f"OpenCode dependencies missing; run harness2-setup {bench}")
 
     if config.DEFAULT_PROPOSER_CHANNEL == "claude_cli" and config.CLAUDE_AUTH == "subscription":
         claude_login_errors(errors)
-    vertex_judge = not (bench == "jb" and config.AGY_JUDGE) and (
+    vertex_judge = not (bench == "jb" and config.CODEX_JUDGE) and (
         bench == "wb" or config.JUDGE_MODEL.startswith(("claude", "gemini"))
     )
     if any(
@@ -107,8 +108,8 @@ def check(adapter, *, judge=False) -> list[str]:
                 "import pandas, openpyxl, docx, mammoth, pdfplumber, pptx, openai",
             ],
         )
-        if config.AGY_JUDGE:
-            agy_judge_errors(errors)
+        if config.CODEX_JUDGE:
+            codex_judge_errors(errors)
         elif not config.JB_JUDGE_API_BASE:
             errors.append(
                 "Set GOOGLE_CLOUD_PROJECT or HARNESS2_JUDGE_BASE_URL for JobBench judging"
@@ -170,24 +171,27 @@ def claude_login_errors(errors: list[str]) -> None:
         errors.append(f"The improver's Claude profile has no claude.ai login; {remedy}")
 
 
-def agy_judge_errors(errors: list[str]) -> None:
-    """The Antigravity CLI is installed, logged in, and offers the judge model."""
-    remedy = "install agy and run it once interactively to log in (docs/SETUP.md)"
+def codex_judge_errors(errors: list[str]) -> None:
+    """The judge's own Codex is installed and logged in to ChatGPT."""
+    from .install import codex_login_command
+
+    binary, home = config.JUDGE_CODEX_BIN, config.JUDGE_CODEX_HOME
+    if not binary.is_file():
+        errors.append(f"The judge's Codex is not installed at {binary}; run harness2-setup jb")
+        return
     try:
         r = subprocess.run(
-            [config.AGY_BIN, "models"], capture_output=True, text=True, timeout=60
+            [str(binary), "login", "status"],
+            env={**os.environ, "CODEX_HOME": str(home)},
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        errors.append(f"Antigravity CLI ({config.AGY_BIN}): {type(exc).__name__}; {remedy}")
+        errors.append(f"judge codex login status failed ({type(exc).__name__})")
         return
-    slugs = {line.split("\t", 1)[0].strip() for line in r.stdout.splitlines() if "\t" in line}
-    if r.returncode or not slugs:
-        errors.append(f"Antigravity CLI could not list models; {remedy}")
-    elif config.JUDGE_MODEL not in slugs:
-        errors.append(
-            f"HARNESS2_JUDGE_MODEL {config.JUDGE_MODEL!r} is not an agy model; "
-            f"choose one of: {', '.join(sorted(slugs))}"
-        )
+    if r.returncode or "ChatGPT" not in r.stdout + r.stderr:
+        errors.append(f"The judge's Codex has no ChatGPT login; run: {codex_login_command(binary, home)}")
 
 
 def require_ready(adapter, *, judge=False):

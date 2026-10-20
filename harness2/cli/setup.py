@@ -51,16 +51,18 @@ def main(argv=None):
             ):
                 if not shutil.which(binary):
                     raise RuntimeError(f"Missing {binary}; see README.md")
-        install.clone("opencode", dry_run=dry)
-        install.patch("opencode", dry_run=dry)
-        install.run(
-            ["npm", "install", "--prefix", config.DEPENDENCIES / "tools", "bun@1.3.11"], dry_run=dry
-        )
-        install.run(
-            [config.BUN, "install", "--frozen-lockfile", "--ignore-scripts"],
-            cwd=config.OPENCODE_DIR,
-            dry_run=dry,
-        )
+        if config.needs_opencode(args.substrate) or args.benchmark == "wb":
+            install.clone("opencode", dry_run=dry)
+            install.patch("opencode", dry_run=dry)
+            install.run(
+                ["npm", "install", "--prefix", config.DEPENDENCIES / "tools", "bun@1.3.11"],
+                dry_run=dry,
+            )
+            install.run(
+                [config.BUN, "install", "--frozen-lockfile", "--ignore-scripts"],
+                cwd=config.OPENCODE_DIR,
+                dry_run=dry,
+            )
         install.clone(name, dry_run=dry)
         install.patch(name, dry_run=dry)
         install.overlays(name, dry_run=dry)
@@ -106,6 +108,8 @@ def main(argv=None):
                 )
         if args.substrate == "cx":
             install.codex(dry_run=dry)
+        if args.benchmark == "jb" and config.CODEX_JUDGE:
+            install.codex_judge(dry_run=dry)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         p.exit(1, f"setup failed: {exc}\n")
     print(

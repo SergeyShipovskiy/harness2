@@ -191,18 +191,34 @@ def workbuddy_models(*, dry_run=False):
 
 
 def codex(*, dry_run=False):
-    root = config.DEPENDENCIES / "codex"
-    run(
-        ["npm", "install", "--prefix", root, f"@openai/codex@{config.CODEX_VERSION}"],
-        dry_run=dry_run,
-    )
+    _stage_codex(config.DEPENDENCIES / "codex", config.CODEX_VERSION, dry_run=dry_run)
+    configure_codex(dry_run=dry_run)
+
+
+def codex_judge(*, dry_run=False):
+    """The JobBench judge's own Codex install and ChatGPT profile."""
+    root = config.JUDGE_CODEX_ROOT
+    _stage_codex(root, config.JUDGE_CODEX_VERSION, dry_run=dry_run)
+    if not dry_run:
+        config.JUDGE_CODEX_HOME.mkdir(parents=True, exist_ok=True)
+        (config.JUDGE_CODEX_HOME / "config.toml").write_text(
+            'forced_login_method = "chatgpt"\ncli_auth_credentials_store = "file"\n',
+            encoding="utf-8",
+        )
+    if not (config.JUDGE_CODEX_HOME / "auth.json").is_file():
+        login = codex_login_command(config.JUDGE_CODEX_BIN, config.JUDGE_CODEX_HOME)
+        print(f"Log the judge's Codex in to ChatGPT once: {login}", flush=True)
+
+
+def _stage_codex(root: Path, version: str, *, dry_run=False):
+    run(["npm", "install", "--prefix", root, f"@openai/codex@{version}"], dry_run=dry_run)
     if not dry_run:
         candidates = list((root / "node_modules" / "@openai").glob("**/bin/codex"))
         if len(candidates) != 1:
             raise RuntimeError(
                 f"Expected one native Codex binary in {root}; found {len(candidates)}"
             )
-        dest = Path(config.CODEX_DIST)
+        dest = root / "dist"
         platform = candidates[0].parent.parent
         shutil.copytree(platform, dest, dirs_exist_ok=True)
         _share_with_containers(dest)
@@ -210,7 +226,6 @@ def codex(*, dry_run=False):
         if binary.is_symlink():
             binary.unlink()
         binary.symlink_to("bin/codex")
-    configure_codex(dry_run=dry_run)
 
 
 def _share_with_containers(root: Path) -> None:
@@ -233,8 +248,10 @@ CODEX_CONFIG_REMEDY = "rerun harness2-setup <bench> --substrate cx"
 CODEX_PROVIDER = "harness2"
 
 
-def codex_login_command() -> str:
-    return f"CODEX_HOME={config.CODEX_HOME_DIR} {Path(config.CODEX_DIST) / 'codex'} login"
+def codex_login_command(
+    binary: Path = Path(config.CODEX_DIST) / "codex", home: Path = config.CODEX_HOME_DIR
+) -> str:
+    return f"CODEX_HOME={home} {binary} login"
 
 
 def configure_codex(*, dry_run=False):

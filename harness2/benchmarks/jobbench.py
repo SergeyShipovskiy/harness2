@@ -1089,7 +1089,7 @@ class JobBenchAdapter:
         try:
             token = (
                 config.JB_JUDGE_API_KEY
-                or ("unused" if config.AGY_JUDGE else "")
+                or ("unused" if config.CODEX_JUDGE else "")
                 or subprocess.run(
                     ["gcloud", "auth", "application-default", "print-access-token"],
                     capture_output=True,
@@ -1121,11 +1121,12 @@ class JobBenchAdapter:
             "--api-base",
             api_base,
             "--max-workers",
-            str(config.JB_JUDGE_WORKERS),
+            "8",
             "--max-retries",
-            "3",
+            "2" if config.CODEX_JUDGE else "3",
+            # The codex backend reads every rubric in one call, so this bounds the whole call.
             "--timeout-per-rubric",
-            "240",
+            "900" if config.CODEX_JUDGE else "240",
             "--evaluated-model",
             label,
         ]
@@ -1134,7 +1135,8 @@ class JobBenchAdapter:
             "JUDGE_API_KEY": token,
             "JUDGE_REASONING_EFFORT": config.JB_JUDGE_REASONING_EFFORT,
             "VERTEXAI_LOCATION": config.VERTEX_REGION,
-            "AGY_BIN": config.AGY_BIN,
+            "CODEX_JUDGE_BIN": str(config.JUDGE_CODEX_BIN),
+            "CODEX_HOME": str(config.JUDGE_CODEX_HOME),
         }
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=1800)
